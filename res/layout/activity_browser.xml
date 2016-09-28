@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/main_frame"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context="ca.cuni.heples.BrowserActivity"
+    android:longClickable="false"
+    android:foregroundGravity="fill_vertical">
+
+    <ProgressBar
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:id="@+id/progressBar"
+        android:elevation="5dp"
+        android:focusable="false" />
+</FrameLayout>
