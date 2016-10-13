@@ -9,14 +9,18 @@ import android.animation.ObjectAnimator;
 import android.app.ActionBar;
 import android.app.Activity;
 import android.app.ListActivity;
+import android.app.backup.BackupManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
@@ -95,6 +99,8 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Map;
+import java.util.Properties;
 import java.util.Timer;
 
 public class BrowserActivity extends Activity {
@@ -106,10 +112,10 @@ public class BrowserActivity extends Activity {
 
     // browser options
     protected boolean m_fullscreen = false;
-    protected boolean m_loadimg = true;
-    protected boolean m_jsen = true;
     protected int m_textsize = 18 ;
-    protected int m_textzoom = 112 ;
+    protected int m_textzoom = 120 ;
+
+    protected boolean m_datachanged = false ;
 
     protected final int MSG_FULLSCREEN = 1001;
     protected final int MSG_OPENLINK = 1002;
@@ -132,6 +138,93 @@ public class BrowserActivity extends Activity {
             R.drawable.ic_pages_9,
             R.drawable.ic_pages_9p
     };
+
+    private class SitesOpenHelper extends SQLiteOpenHelper {
+
+        static final int DATABASE_VERSION = 1;
+        static final String DATABASE_NAME = "sites";
+        static final String SITES_TABLE_NAME = "sites";
+        static final String SITE_NAME = "site";
+        static final String SITE_NOJS = "nojs";
+        static final String SITE_NOIMG = "noimg";
+
+        SitesOpenHelper(Context context) {
+            super(context, DATABASE_NAME, null, DATABASE_VERSION);
+        }
+
+        @Override
+        public void onCreate(SQLiteDatabase db) {
+            String sites_create_table =
+                    "CREATE TABLE " + SITES_TABLE_NAME + " (" +
+                            SITE_NAME + " TEXT PRIMARY KEY , " +
+                            SITE_NOJS + " BOOLEAN, " +
+                            SITE_NOIMG + " BOOLEAN " + ");";
+            db.execSQL(sites_create_table);
+        }
+
+        @Override
+        public void onUpgrade(SQLiteDatabase sqLiteDatabase, int i, int i1) {
+
+        }
+
+        public void setSiteProp( String site, boolean nojs, boolean noimg ) {
+            Uri uri = Uri.parse( site );
+            site = uri.getHost().toLowerCase();
+
+            SQLiteDatabase db = getWritableDatabase();
+            if( (!nojs) && (!noimg) ) {
+                db.delete( SITES_TABLE_NAME, SITE_NAME + " = \'" + site + "\'" , null );
+            }
+            else {
+                ContentValues values = new ContentValues();
+                values.put(SITE_NAME, site);
+                values.put(SITE_NOJS, nojs);
+                values.put(SITE_NOIMG, noimg);
+                db.replace(SITES_TABLE_NAME, null, values);
+            }
+            m_datachanged = true ;
+        }
+
+        public Bundle getSiteProp( String site ) {
+            Uri uri = Uri.parse( site );
+            site = uri.getHost().toLowerCase();
+
+            SQLiteDatabase db = getReadableDatabase();
+            String[] columns = {
+                SITE_NOJS, SITE_NOIMG
+            };
+            Cursor cursor = db.query(true,
+                    SITES_TABLE_NAME,
+                    columns,
+                    SITE_NAME + " = \'" + site + "\'",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null);
+            if (cursor.moveToFirst()) {
+                Bundle bundle = new Bundle();
+                bundle.putBoolean(SITE_NOJS, cursor.getInt(0) != 0 );
+                bundle.putBoolean(SITE_NOIMG, cursor.getInt(1) != 0 );
+                cursor.close();
+                return bundle ;
+            }
+            return null;
+        }
+
+
+    };
+
+    SitesOpenHelper sites ;
+
+    void setSitePref() {
+        WebView v = currentWeb();
+        if( v != null && sites!=null ) {
+            boolean nojs = ! v.getSettings().getJavaScriptEnabled();
+            boolean noimg = ! v.getSettings().getLoadsImagesAutomatically();
+            sites.setSiteProp(v.getUrl(), nojs, noimg);
+        }
+    }
 
     class WebEntry {
         int     id  ;
@@ -262,6 +355,10 @@ public class BrowserActivity extends Activity {
                     }
                 });
 
+
+        // sites preference
+        sites = new SitesOpenHelper(this);
+
         if (savedInstanceState != null) {
             m_savedWeb.clear();
             int tabcount = savedInstanceState.getInt("WebViewCount", 0);
@@ -273,17 +370,22 @@ public class BrowserActivity extends Activity {
                     WebEntry sw = new WebEntry(state);
                     m_savedWeb.add(sw);
                 }
-            }
-        } else {
-            Intent intent = getIntent();
-            if (intent != null) {
-                String url = intent.getDataString();
-                if (url != null)
-                    newWeb(url);
+                else {
+                    break ;
+                }
             }
         }
 
-        bookmarkRestore();
+        Intent intent = getIntent();
+        if (intent != null) {
+            String url = intent.getDataString();
+            if (url != null)
+                newWeb(url);
+        }
+
+        // bookmarkRestore();
+
+
     }
 
     @Override
@@ -326,30 +428,22 @@ public class BrowserActivity extends Activity {
     private void loadOptions() {
         SharedPreferences prefs = getPreferences(Context.MODE_PRIVATE);
         m_fullscreen = prefs.getBoolean("fullscreen", false);
-        m_loadimg = prefs.getBoolean("loadimg", true);
-        m_jsen = prefs.getBoolean("javascript", true);
-        m_textzoom = prefs.getInt("textzoom", 112) ;
+        m_textzoom = prefs.getInt("textzoom", 120) ;
         m_textsize = prefs.getInt("textsize", 18) ;
     }
 
     private void saveOptions() {
         SharedPreferences prefs = getPreferences(Context.MODE_PRIVATE);
         boolean x_fullscreen = prefs.getBoolean("fullscreen", false);
-        boolean x_loadimg = prefs.getBoolean("loadimg", true);
-        boolean x_jsen = prefs.getBoolean("javascript", true);
-        int x_textzoom = prefs.getInt("textzoom", 112) ;
+        int x_textzoom = prefs.getInt("textzoom", 120) ;
         int x_textsize = prefs.getInt("textsize", 18) ;
 
         if( x_fullscreen != m_fullscreen ||
-                x_loadimg != m_loadimg ||
-                x_jsen != m_jsen ||
                 x_textzoom != m_textzoom ||
                 x_textsize != m_textsize
                 ) {
             SharedPreferences.Editor editor = prefs.edit();
             editor.putBoolean("fullscreen", m_fullscreen);
-            editor.putBoolean("loadimg", m_loadimg);
-            editor.putBoolean("javascript", m_jsen);
             editor.putInt("textzoom", m_textzoom) ;
             editor.putInt("textsize", m_textsize) ;
 
@@ -379,11 +473,11 @@ public class BrowserActivity extends Activity {
 
         if ( getWebViewCount() + m_savedWeb.size() == 0 ) {
             try {
-                File fpages = getFileStreamPath (pagesfile) ;
-                int flen = (int)fpages.length() ;
+                File pagefile = new File( getCacheDir(), pagesfile );
+                int flen = (int)pagefile.length() ;
                 if( flen>0 ) {
                     byte[] buffer = new byte[flen];
-                    FileInputStream inputStream = new FileInputStream(fpages);
+                    FileInputStream inputStream = new FileInputStream(pagefile);
                     if (inputStream != null) {
                         int r = inputStream.read(buffer);
                         if (r > 0) {
@@ -424,26 +518,20 @@ public class BrowserActivity extends Activity {
         }
 
         try {
-            FileOutputStream outputStream = openFileOutput( pagesfile, Context.MODE_PRIVATE);
+            File pagefile = new File( getCacheDir(), pagesfile );
+            FileOutputStream outputStream = new FileOutputStream( pagefile );
             outputStream.write( ja.toString().getBytes() ) ;
             outputStream.close();
         } catch (Exception e) {
             e.printStackTrace();
         }
 
-    }
-
-    @Override
-    protected void onDestroy() {
-        try {
-            FileOutputStream outputStream = openFileOutput("pages", Context.MODE_PRIVATE);
-            outputStream.write( new JSONArray().toString().getBytes() ) ;
-            outputStream.close();
-        } catch (Exception e) {
-            e.printStackTrace();
+        if( m_datachanged  ) {
+            BackupManager backup = new BackupManager(this);
+            backup.dataChanged();
+            m_datachanged = false ;
         }
 
-        super.onDestroy();
     }
 
     void traversView(View v, int level ) {
@@ -540,8 +628,10 @@ public class BrowserActivity extends Activity {
             // webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
             webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
-        webSettings.setLoadsImagesAutomatically(m_loadimg);
-        webSettings.setJavaScriptEnabled(m_jsen);
+
+        // all true on new web
+        webSettings.setLoadsImagesAutomatically(true);
+        webSettings.setJavaScriptEnabled(true);
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -611,6 +701,31 @@ public class BrowserActivity extends Activity {
         });
 
         webView.setWebViewClient(new WebViewClient() {
+
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+
+                boolean x_nojs = !view.getSettings().getJavaScriptEnabled();
+                boolean x_noimg = !view.getSettings().getLoadsImagesAutomatically();
+
+                boolean nojs = false ;
+                boolean noimg = false ;
+
+                Bundle b = sites.getSiteProp(url);
+                if( b!=null ) {
+                    nojs = b.getBoolean(SitesOpenHelper.SITE_NOJS) ;
+                    noimg = b.getBoolean(SitesOpenHelper.SITE_NOIMG) ;
+                }
+                if( nojs != x_nojs || noimg!=x_noimg ) {
+                    view.getSettings().setJavaScriptEnabled(!nojs);
+                    view.getSettings().setLoadsImagesAutomatically(!noimg);
+                }
+
+                setTitle(url);
+                setIcon(favicon);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 Uri uri = Uri.parse(url);
@@ -644,13 +759,8 @@ public class BrowserActivity extends Activity {
 
             @Override
             public void onLoadResource(WebView view, String url) {
-                Log.i("hep-res", url);
+                // Log.i("hep-res", url);
                 super.onLoadResource(view, url);
-            }
-
-            @Override
-            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
-                super.doUpdateVisitedHistory(view, url, isReload);
             }
 
             @Override
@@ -661,20 +771,6 @@ public class BrowserActivity extends Activity {
                 }
             }
 
-            @Override
-            public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
-                super.onReceivedHttpError(view, request, errorResponse);
-            }
-
-            @Override
-            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                super.onReceivedError(view, errorCode, description, failingUrl);
-            }
-
-            @Override
-            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                super.onReceivedError(view, request, error);
-            }
         });
 
         m_frame.addView(webView);
@@ -753,9 +849,6 @@ public class BrowserActivity extends Activity {
         if (v != null) {
             if( v!=currentWeb() ) {
                 v.bringToFront();
-                // changeble settings
-                v.getSettings().setLoadsImagesAutomatically(m_loadimg);
-                v.getSettings().setJavaScriptEnabled(m_jsen);
             }
             setTitle(v.getTitle());
             setIcon(v.getFavicon());
@@ -1184,22 +1277,17 @@ public class BrowserActivity extends Activity {
 
     }
 
+    /*
     String backupId()
     {
         String id = null ;
-        Account[] accounts = AccountManager.get(this).getAccountsByType("com.google");
-        if (accounts.length > 0) {
-            id = accounts[0].name ;
-        }
 
-        if( id == null || id.length()<3 ) {
-            try {
-                Method getString = Build.class.getDeclaredMethod("getString", String.class);
-                getString.setAccessible(true);
-                id = getString.invoke(null, "net.hostname").toString();
-            } catch (Exception ex) {
-                id = null;
-            }
+        try {
+            Class c = Class.forName("android.os.SystemProperties");
+            Method getProp = c.getDeclaredMethod("get", String.class);
+            id = (String) getProp.invoke(null, "net.hostname");
+        } catch (Exception ex) {
+            id = null;
         }
 
         if( id==null || id.length()<3 ) {
@@ -1302,6 +1390,7 @@ public class BrowserActivity extends Activity {
             }.execute();
         }
     }
+    */
 
 
     JSONArray bookmarkRead() {
@@ -1336,11 +1425,12 @@ public class BrowserActivity extends Activity {
                 if (fbookmark != null) {
                     fbookmark.write(bookmarks.toString().getBytes());
                     fbookmark.close();
+                    m_datachanged = true ;
                 }
             } catch (IOException e) {
                 e.printStackTrace();
             }
-            bookmarkBackup(bookmarks);
+            // bookmarkBackup(bookmarks);
         }
     }
 
@@ -1496,11 +1586,13 @@ public class BrowserActivity extends Activity {
             mi = menu.findItem(R.id.fullscreen);
             mi.setChecked(m_fullscreen);
 
+            boolean jsen = webview.getSettings().getJavaScriptEnabled();
             mi = menu.findItem(R.id.disablejavascript);
-            mi.setChecked(!m_jsen);
+            mi.setChecked(!jsen);
 
+            boolean loadimg = webview.getSettings().getLoadsImagesAutomatically();
             mi = menu.findItem(R.id.noimage);
-            mi.setChecked(!m_loadimg);
+            mi.setChecked(!loadimg);
 
             // history
             WebBackForwardList wfl = webview.copyBackForwardList();
@@ -1566,13 +1658,13 @@ public class BrowserActivity extends Activity {
             fullscreen_delay(100);
             return true;
         } else if (id == R.id.noimage) {
-            m_loadimg = !m_loadimg;
-            currentWeb().getSettings().setLoadsImagesAutomatically(m_loadimg);
+            currentWeb().getSettings().setLoadsImagesAutomatically(item.isChecked());
+            setSitePref() ;
             currentWeb().reload();
             return true;
         } else if (id == R.id.disablejavascript) {
-            m_jsen = !m_jsen;
-            currentWeb().getSettings().setJavaScriptEnabled(m_jsen);
+            currentWeb().getSettings().setJavaScriptEnabled(item.isChecked());
+            setSitePref() ;
             currentWeb().reload();
             return true;
         }
@@ -1618,5 +1710,6 @@ public class BrowserActivity extends Activity {
         outState.putInt("WebViewCount", idx);
 
     }
+
 
 }
