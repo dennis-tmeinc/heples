@@ -1,19 +1,19 @@
 package ca.cuni.heples;
 
 import android.Manifest;
-import android.accounts.Account;
-import android.accounts.AccountManager;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
 import android.app.ActionBar;
 import android.app.Activity;
-import android.app.ListActivity;
+import android.app.AlertDialog;
 import android.app.backup.BackupManager;
+import android.app.backup.RestoreObserver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
@@ -28,14 +28,10 @@ import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
-import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
-import android.os.SystemClock;
-import android.provider.ContactsContract;
-import android.util.ArraySet;
 import android.util.Log;
 import android.view.ContextMenu;
 import android.view.GestureDetector;
@@ -47,19 +43,12 @@ import android.view.MotionEvent;
 import android.view.SubMenu;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewParent;
-import android.view.ViewPropertyAnimator;
-import android.view.Window;
-import android.view.WindowManager;
-import android.view.animation.AccelerateDecelerateInterpolator;
-import android.view.animation.DecelerateInterpolator;
-import android.webkit.ClientCertRequest;
 import android.webkit.GeolocationPermissions;
+import android.webkit.HttpAuthHandler;
 import android.webkit.MimeTypeMap;
 import android.webkit.WebBackForwardList;
 import android.webkit.WebChromeClient;
 import android.webkit.WebHistoryItem;
-import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -70,6 +59,7 @@ import android.widget.ArrayAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.ListAdapter;
 import android.widget.ListPopupWindow;
 import android.widget.ListView;
@@ -86,22 +76,11 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.net.URLEncoder;
 import java.util.ArrayList;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Timer;
+
+import static android.webkit.WebView.HitTestResult.SRC_ANCHOR_TYPE;
 
 public class BrowserActivity extends Activity {
 
@@ -138,6 +117,8 @@ public class BrowserActivity extends Activity {
             R.drawable.ic_pages_9,
             R.drawable.ic_pages_9p
     };
+
+    protected BookmarkArray m_bookmarks ;
 
     private class SitesOpenHelper extends SQLiteOpenHelper {
 
@@ -300,6 +281,8 @@ public class BrowserActivity extends Activity {
         m_progressbar = (ProgressBar) findViewById(R.id.progressBar) ;
         m_progressbar.setMax(10000);
 
+        m_bookmarks = new BookmarkArray();
+
         m_handler = new Handler() {
             @Override
             public void handleMessage(Message msg) {
@@ -451,6 +434,42 @@ public class BrowserActivity extends Activity {
         }
     }
 
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    }
+
+    protected interface permCallback {
+        public void callback( boolean granted );
+    }
+
+    protected void requestPermission( String perm, permCallback callback ) {
+        if( Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ) {
+            if( checkSelfPermission( perm ) != PackageManager.PERMISSION_GRANTED ) {
+                // Should we show an explanation?
+                if ( shouldShowRequestPermissionRationale( perm ) ) {
+
+                    // Show an expanation to the user *asynchronously* -- don't block
+                    // this thread waiting for the user's response! After the user
+                    // sees the explanation, try again to request the permission.
+
+                } else {
+
+                    // No explanation needed, we can request the permission.
+
+                    requestPermissions( new String[]{perm}, 0 ) ;
+
+                    // MY_PERMISSIONS_REQUEST_READ_CONTACTS is an
+                    // app-defined int constant. The callback method gets the
+                    // result of the request.
+                }
+            }
+        }
+        else {
+            callback.callback(true);
+        }
+    }
+
     protected void openExternal( String url ) {
         MimeTypeMap map = MimeTypeMap.getSingleton();
         String ext = MimeTypeMap.getFileExtensionFromUrl(url);
@@ -495,6 +514,7 @@ public class BrowserActivity extends Activity {
         showWeb();
         fullscreen( false );
         fullscreen_delay(3000);
+
     }
 
     @Override
@@ -524,6 +544,10 @@ public class BrowserActivity extends Activity {
             outputStream.close();
         } catch (Exception e) {
             e.printStackTrace();
+        }
+
+        if( m_bookmarks.save()) {
+            m_datachanged = true ;
         }
 
         if( m_datachanged  ) {
@@ -576,7 +600,7 @@ public class BrowserActivity extends Activity {
 
     protected WebView newWebView() {
         WebView webView = new WebView(this) {
-            boolean m_paused = false;
+            private boolean m_paused = false;
 
             @Override
             protected void onDetachedFromWindow() {
@@ -624,6 +648,7 @@ public class BrowserActivity extends Activity {
         webSettings.setSupportZoom(true);
         webSettings.setLayoutAlgorithm(WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING);
         webSettings.setLoadWithOverviewMode(true);
+
         if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP ) {
             // webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
             webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
@@ -642,8 +667,13 @@ public class BrowserActivity extends Activity {
             }
 
             @Override
-            public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
-                callback.invoke(origin, true, true);
+            public void onGeolocationPermissionsShowPrompt(final String origin, final GeolocationPermissions.Callback geoCallback) {
+                requestPermission(Manifest.permission.ACCESS_FINE_LOCATION, new permCallback() {
+                    @Override
+                    public void callback(boolean granted) {
+                        geoCallback.invoke(origin, granted, true);
+                    }
+                });
             }
 
             @Override
@@ -651,6 +681,13 @@ public class BrowserActivity extends Activity {
                 super.onReceivedTitle(view, title);
                 if (view == currentWeb()) {
                     setTitle(title);
+                    String url = view.getUrl();
+                    if( m_bookmarks.has(url) ) {
+                        String xtitle = m_bookmarks.getTitle(url);
+                        if( !xtitle.equals(title) ) {
+                            m_bookmarks.add(url, title);
+                        }
+                    }
                 }
             }
 
@@ -758,6 +795,51 @@ public class BrowserActivity extends Activity {
             }
 
             @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                return shouldOverrideUrlLoading(view, request.getUrl().toString());
+            }
+
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                if( ! isReload ) {
+                    // check history
+
+                    WebView.HitTestResult ht = view.getHitTestResult() ;
+
+                    WebBackForwardList wfl = view.copyBackForwardList();
+                    if (wfl != null && wfl.getSize() > 1 && ( ht.getType() == WebView.HitTestResult.SRC_ANCHOR_TYPE || ht.getType() == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE ) ) {
+                        WebHistoryItem whi = wfl.getItemAtIndex(wfl.getSize() - 2);
+                        if (whi != null) {
+                            String xurl = whi.getUrl();
+                            int xl , ul ;
+                            String x_path="", x_file="" ;
+                            String u_path="", u_file="" ;
+
+                            xl = xurl.lastIndexOf('/') ;
+                            if( xl>0 ) {
+                                x_path = xurl.substring(0, xl);
+                                x_file = xurl.substring(xl + 1);
+                            }
+
+                            ul = url.lastIndexOf('/');
+                            if( ul>0 ) {
+                                u_path = url.substring(0, ul);
+                                u_file = url.substring(ul + 1);
+                            }
+
+                            if( xl == ul && x_path.equals(u_path) && (!x_file.equals(u_file)) && !x_file.isEmpty() && !u_file.isEmpty() ) {
+                                if( m_bookmarks.has(xurl) ) {
+                                    m_bookmarks.remove(xurl);
+                                    m_bookmarks.add( url, view.getTitle() );
+                                }
+                            }
+                        }
+                    }
+                }
+                super.doUpdateVisitedHistory(view, url, isReload);
+            }
+
+            @Override
             public void onLoadResource(WebView view, String url) {
                 // Log.i("hep-res", url);
                 super.onLoadResource(view, url);
@@ -771,28 +853,50 @@ public class BrowserActivity extends Activity {
                 }
             }
 
+            @Override
+            public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) {
+                final HttpAuthHandler fhandler = handler ;
+                final EditText txtUser = new EditText(view.getContext());
+                final EditText txtPass = new EditText(view.getContext());
+                txtUser.setHint("Username");
+                txtPass.setHint("Password");
+                LinearLayout ly = new LinearLayout(view.getContext());
+                ly.setOrientation(LinearLayout.VERTICAL);
+                ly.addView(txtUser);
+                ly.addView(txtPass);
+
+                new AlertDialog.Builder(view.getContext())
+                        .setTitle("Auth Required")
+                        .setView(ly)
+                        .setPositiveButton("Ok", new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int whichButton) {
+                                String user = txtUser.getText().toString();
+                                String pass = txtPass.getText().toString();
+                                fhandler.proceed(user, pass);
+                            }
+                        })
+                        .show();
+                // super.onReceivedHttpAuthRequest(view, handler, host, realm);
+            }
         });
 
         m_frame.addView(webView);
         return webView;
     }
 
-    private boolean m_connected = true;
-
     protected void newWeb(String url) {
         WebView v = newWebView();
         if (url == null) {
             url = defaultUrl ;
 
+            boolean connected = false ;
             ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
             NetworkInfo ni = cm.getActiveNetworkInfo();
             if (ni != null) {
-                m_connected = ni.isConnected();
-            } else {
-                m_connected = false;
+                connected = ni.isConnected();
             }
-            v.setNetworkAvailable(m_connected);
-            if (!m_connected) {
+            v.setNetworkAvailable(connected);
+            if (!connected) {
                 v.getSettings().setCacheMode(WebSettings.LOAD_CACHE_ONLY);
             }
         }
@@ -970,7 +1074,7 @@ public class BrowserActivity extends Activity {
         MenuItem mi;
         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
 
-        if (hittype == WebView.HitTestResult.SRC_ANCHOR_TYPE) {
+        if (hittype == SRC_ANCHOR_TYPE) {
             // direct open in new page
             mi = menu.add(0, 1001, 0, "Open in New Page");
             mi.setIntent(intent);
@@ -1393,72 +1497,115 @@ public class BrowserActivity extends Activity {
     */
 
 
-    JSONArray bookmarkRead() {
-        JSONArray bookmarks = new JSONArray();
-        try {
-            File fbookmark = getFileStreamPath(bookmarkfile);
-            int flen = (int) fbookmark.length();
-            if (flen > 0) {
-                byte[] buffer = new byte[flen];
-                FileInputStream inputStream = new FileInputStream(fbookmark);
-                if (inputStream != null) {
-                    int r = inputStream.read(buffer);
-                    if (r > 0) {
-                        bookmarks = new JSONArray(new String(buffer, 0, r));
-                    }
-                }
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        } catch (JSONException e) {
-            e.printStackTrace();
-        } catch ( Exception e) {
-            e.printStackTrace();
-        }
-        return bookmarks ;
-    }
+    class BookmarkArray {
+        JSONArray bookmarks ;
+        boolean dirty ;
 
-    void bookmarkSave( JSONArray bookmarks ) {
-        if( bookmarks!=null ) {
+        BookmarkArray() {
+            dirty = false ;
+            bookmarks = new JSONArray();
             try {
-                FileOutputStream fbookmark = openFileOutput(bookmarkfile, MODE_PRIVATE);
-                if (fbookmark != null) {
-                    fbookmark.write(bookmarks.toString().getBytes());
-                    fbookmark.close();
-                    m_datachanged = true ;
+                File fbookmark = getFileStreamPath(bookmarkfile);
+                int flen = (int) fbookmark.length();
+                if (flen > 0) {
+                    byte[] buffer = new byte[flen];
+                    FileInputStream inputStream = new FileInputStream(fbookmark);
+                    if (inputStream != null) {
+                        int r = inputStream.read(buffer);
+                        if (r > 0) {
+                            bookmarks = new JSONArray(new String(buffer, 0, r));
+                        }
+                    }
                 }
             } catch (IOException e) {
                 e.printStackTrace();
+            } catch (JSONException e) {
+                e.printStackTrace();
+            } catch ( Exception e) {
+                e.printStackTrace();
             }
-            // bookmarkBackup(bookmarks);
         }
-    }
 
-    void bookmarkAddCurrent( JSONArray bookmarks ) {
-        JSONObject jo = new JSONObject();
-        String url = currentWeb().getUrl() ;
-        bookmarkRemove( bookmarks, url );
-        try {
-            jo.put("url", url );
-            jo.put("title", currentWeb().getTitle());
-            bookmarks.put(jo);
-        } catch (JSONException e) {
-            e.printStackTrace();
-        }
-    }
-
-    void bookmarkRemove( JSONArray bookmarks, String url ) {
-        // to remove current bookmark
-        for(int i = bookmarks.length()-1 ; i>=0 ; i-- ) {
-            try {
-                JSONObject jo = bookmarks.getJSONObject(i) ;
-                String burl = jo.getString("url") ;
-                if( burl.equals(url) ) {
-                    bookmarks.remove(i) ;
+        int getIdx( String url ) {
+            for(int i = 0; i<bookmarks.length() ; i++ ) {
+                try {
+                    JSONObject jo = bookmarks.getJSONObject(i) ;
+                    String burl = jo.getString("url") ;
+                    if( burl.equals(url) ) {
+                        return i ;
+                    }
+                } catch (JSONException e) {
+                    e.printStackTrace();
                 }
+            }
+            return -1 ;
+        }
+
+        boolean has( String url ) {
+            return getIdx(url) >= 0 ;
+        }
+
+        String getTitle( String url ) {
+            for(int i = 0; i<bookmarks.length() ; i++ ) {
+                try {
+                    JSONObject jo = bookmarks.getJSONObject(i) ;
+                    String burl = jo.getString("url") ;
+                    if( burl.equals(url) ) {
+                        return jo.getString("title");
+                    }
+                } catch (JSONException e) {
+                    e.printStackTrace();
+                }
+            }
+            return null ;
+        }
+
+        void remove( String url ){
+            int idx = getIdx(url) ;
+            if( idx>=0 ) {
+                bookmarks.remove(idx) ;
+                dirty = true ;
+            }
+        }
+
+        void add( String url, String title) {
+            try {
+                JSONObject jo = new JSONObject();
+                jo.put("url", url );
+                jo.put("title", title);
+                int idx = getIdx(url) ;
+                if( idx>=0 ) {
+                    bookmarks.put( idx, jo ) ;
+                }
+                else {
+                    bookmarks.put(jo);
+                }
+                dirty = true ;
             } catch (JSONException e) {
                 e.printStackTrace();
             }
+        }
+
+        void addCurrent() {
+            add(currentWeb().getUrl(), currentWeb().getTitle());
+        }
+
+        boolean save() {
+            if( dirty ) {
+                try {
+                    FileOutputStream fbookmark = openFileOutput(bookmarkfile, MODE_PRIVATE);
+                    if (fbookmark != null) {
+                        fbookmark.write(bookmarks.toString().getBytes());
+                        fbookmark.close();
+                        return true ;
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                // bookmarkBackup(bookmarks);
+                dirty = false ;
+            }
+            return false ;
         }
     }
 
@@ -1483,14 +1630,6 @@ public class BrowserActivity extends Activity {
 
         };
 
-        class bm_t {
-            JSONArray bookmark ;
-            boolean dirty ;
-        }
-        final bm_t bm = new bm_t() ;
-        bm.bookmark = bookmarkRead();
-        bm.dirty = false ;
-
         class BookmarkEntry extends  ListEntry {
             @Override
             void tap() {
@@ -1501,8 +1640,7 @@ public class BrowserActivity extends Activity {
 
             @Override
             void dismiss() {
-                bookmarkRemove(bm.bookmark, url) ;
-                bm.dirty = true ;
+                m_bookmarks.remove(url);
             }
         }
 
@@ -1510,8 +1648,7 @@ public class BrowserActivity extends Activity {
         pe = new BookmarkEntry() {
             @Override
             void tap() {
-                bookmarkAddCurrent( bm.bookmark ) ;
-                bm.dirty = true ;
+                m_bookmarks.addCurrent();
             }
         };
         pe.title = "Add Current Page" ;
@@ -1526,9 +1663,9 @@ public class BrowserActivity extends Activity {
         }
         bmadapter.add( pe );
 
-        for (int i = bm.bookmark.length() -1 ; i >= 0 ; i--) {
+        for (int i = m_bookmarks.bookmarks.length() -1 ; i >= 0 ; i--) {
             try {
-                JSONObject jo = bm.bookmark.getJSONObject(i);
+                JSONObject jo = m_bookmarks.bookmarks.getJSONObject(i);
                 if (jo != null) {
                     pe = new BookmarkEntry();
                     pe.title = jo.getString("title");
@@ -1541,16 +1678,6 @@ public class BrowserActivity extends Activity {
         }
 
         listPopup.setAdapter(bmadapter);
-
-        listPopup.setOnDismissListener(new PopupWindow.OnDismissListener() {
-            @Override
-            public void onDismiss() {
-                if( bm.dirty ) {
-                    bookmarkSave(bm.bookmark);
-                }
-            }
-        });
-
         listPopup.setContentWidth(m_frame.getWidth()*4/5);
         listPopup.setDropDownGravity(Gravity.END);
         listPopup.setModal(true);
