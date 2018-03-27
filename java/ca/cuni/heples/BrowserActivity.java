@@ -28,6 +28,7 @@ import android.graphics.drawable.Drawable;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -43,6 +44,7 @@ import android.view.MotionEvent;
 import android.view.SubMenu;
 import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.DownloadListener;
 import android.webkit.GeolocationPermissions;
 import android.webkit.HttpAuthHandler;
 import android.webkit.MimeTypeMap;
@@ -50,22 +52,15 @@ import android.webkit.WebBackForwardList;
 import android.webkit.WebChromeClient;
 import android.webkit.WebHistoryItem;
 import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.EditText;
-import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListAdapter;
 import android.widget.ListPopupWindow;
-import android.widget.ListView;
-import android.widget.OverScroller;
-import android.widget.PopupMenu;
-import android.widget.PopupWindow;
 import android.widget.ProgressBar;
 import android.widget.Scroller;
 import android.widget.TextView;
@@ -78,21 +73,31 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.ProtocolException;
+import java.net.URL;
+import java.net.URLConnection;
+import java.net.URLEncoder;
 import java.util.ArrayList;
 
+import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
+import static android.net.wifi.WifiConfiguration.AuthAlgorithm.strings;
 import static android.webkit.WebView.HitTestResult.SRC_ANCHOR_TYPE;
 
 public class BrowserActivity extends Activity {
 
     protected ViewGroup m_frame;
-    protected ProgressBar m_progressbar;
     protected Handler m_handler;
-    protected int m_visibility ;
 
     // browser options
     protected boolean m_fullscreen = false;
     protected int m_textsize = 18 ;
     protected int m_textzoom = 120 ;
+
+    protected int m_saveOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED ;
+    protected View m_customView = null ;
 
     protected boolean m_datachanged = false ;
 
@@ -100,9 +105,16 @@ public class BrowserActivity extends Activity {
     protected final int MSG_OPENLINK = 1002;
     protected final int MSG_OPENPAGESMENU = 1003;
 
-    protected final static String pagesfile = "pages" ;
+    static final int Permit_Reload = 100 ;
+
     protected final static String bookmarkfile = "bookmarks" ;
     protected final static String defaultUrl = "http://www.google.com/";
+
+    class videoItem {
+        public String url = null ;
+        public String type = null ;
+    };
+    protected ArrayList <videoItem> videolist = new ArrayList <videoItem> ();
 
     protected final int ic_pages[] = {
             R.drawable.ic_pages,
@@ -149,50 +161,51 @@ public class BrowserActivity extends Activity {
         }
 
         public void setSiteProp( String site, boolean nojs, boolean noimg ) {
-            Uri uri = Uri.parse( site );
-            site = uri.getHost().toLowerCase();
-
-            SQLiteDatabase db = getWritableDatabase();
-            if( (!nojs) && (!noimg) ) {
-                db.delete( SITES_TABLE_NAME, SITE_NAME + " = \'" + site + "\'" , null );
+            int xl = site.lastIndexOf('/') ;
+            if( xl>4 ) {
+                site = site.substring(0,xl-1);
+                SQLiteDatabase db = getWritableDatabase();
+                if( (!nojs) && (!noimg) ) {
+                    db.delete( SITES_TABLE_NAME, SITE_NAME + " = \'" + site + "\'" , null );
+                }
+                else {
+                    ContentValues values = new ContentValues();
+                    values.put(SITE_NAME, site);
+                    values.put(SITE_NOJS, nojs);
+                    values.put(SITE_NOIMG, noimg);
+                    db.replace(SITES_TABLE_NAME, null, values);
+                }
+                m_datachanged = true ;
             }
-            else {
-                ContentValues values = new ContentValues();
-                values.put(SITE_NAME, site);
-                values.put(SITE_NOJS, nojs);
-                values.put(SITE_NOIMG, noimg);
-                db.replace(SITES_TABLE_NAME, null, values);
-            }
-            m_datachanged = true ;
         }
 
         public Bundle getSiteProp( String site ) {
-            Uri uri = Uri.parse( site );
-            site = uri.getHost().toLowerCase();
-
-            SQLiteDatabase db = getReadableDatabase();
-            String[] columns = {
-                SITE_NOJS, SITE_NOIMG
-            };
-            Cursor cursor = db.query(true,
-                    SITES_TABLE_NAME,
-                    columns,
-                    SITE_NAME + " = \'" + site + "\'",
-                    null,
-                    null,
-                    null,
-                    null,
-                    null);
-            if (cursor.moveToFirst()) {
-                Bundle bundle = new Bundle();
-                bundle.putBoolean(SITE_NOJS, cursor.getInt(0) != 0 );
-                bundle.putBoolean(SITE_NOIMG, cursor.getInt(1) != 0 );
-                cursor.close();
-                return bundle ;
+            int xl = site.lastIndexOf('/') ;
+            if( xl>4 ) {
+                site = site.substring(0,xl-1);
+                SQLiteDatabase db = getReadableDatabase();
+                String[] columns = {
+                        SITE_NOJS, SITE_NOIMG
+                };
+                Cursor cursor = db.query(true,
+                        SITES_TABLE_NAME,
+                        columns,
+                        SITE_NAME + " = \'" + site + "\'",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null);
+                if (cursor.moveToFirst()) {
+                    Bundle bundle = new Bundle();
+                    bundle.putBoolean(SITE_NOJS, cursor.getInt(0) != 0 );
+                    bundle.putBoolean(SITE_NOIMG, cursor.getInt(1) != 0 );
+                    cursor.close();
+                    return bundle ;
+                }
             }
             return null;
         }
-
 
     };
 
@@ -208,27 +221,27 @@ public class BrowserActivity extends Activity {
     }
 
     class WebEntry {
-        int     id  ;
-        private Bundle state;
-        private String url;
-        private String title;
-        private Bitmap icon;
+        private int     id  ;
+        private Bundle state ;
+        private String url ;
+        private String title ;
+        private Bitmap icon ;
 
-        public WebEntry() {
+        public WebEntry(Bundle st) {
+            url = st.getString("url");
+            title = st.getString("title");
+            state = st.getBundle("state");
+            icon = null ;
             id = View.generateViewId();
         }
 
-        public WebEntry(Bundle st) {
-            this();
-            state = st;
-        }
-
-        void save(WebView v) {
-            url = v.getUrl();
-            title = v.getTitle();
-            icon = v.getFavicon();
+        public WebEntry(WebView w) {
+            id = w.getId();
+            url = w.getUrl();
+            title = w.getTitle();
+            icon = w.getFavicon();
             state = new Bundle();
-            v.saveState(state);
+            w.saveState(state);
         }
 
         void restore(WebView v) {
@@ -238,18 +251,24 @@ public class BrowserActivity extends Activity {
             else if(url!=null) {
                 v.loadUrl(url);
             }
+            v.setId(id);
             if( currentWeb()==v) {
                 if (title != null) {
                     setTitle(title);
                 }
-                if (icon != null) {
-                    setIcon(icon);
-                }
+                setIcon(icon);
             }
         }
 
-        Bundle getState() {
-            return state;
+        Bundle getBundle() {
+            Bundle bd = new Bundle();
+            if( url != null )
+                bd.putString("url", url);
+            if( title != null )
+                bd.putString("title", title);
+            if( state != null )
+                bd.putBundle("state", state);
+            return bd ;
         }
 
         String getTitle() {
@@ -278,8 +297,6 @@ public class BrowserActivity extends Activity {
 
         setContentView(R.layout.activity_browser);
         m_frame = (ViewGroup) findViewById(R.id.main_frame);
-        m_progressbar = (ProgressBar) findViewById(R.id.progressBar) ;
-        m_progressbar.setMax(10000);
 
         m_bookmarks = new BookmarkArray();
 
@@ -289,7 +306,7 @@ public class BrowserActivity extends Activity {
                 super.handleMessage(msg);
                 if (msg.what == MSG_FULLSCREEN) {
                     if( !m_handler.hasMessages(MSG_FULLSCREEN) )
-                        fullscreen(m_fullscreen);
+                        setFullscreen();
                 } else if (msg.what == MSG_OPENLINK) {
                     Bundle data = msg.getData();
                     if (data != null) {
@@ -315,26 +332,23 @@ public class BrowserActivity extends Activity {
         };
 
         registerForContextMenu(m_frame);
+
         m_frame.setOnSystemUiVisibilityChangeListener
                 (new View.OnSystemUiVisibilityChangeListener() {
                     @Override
                     public void onSystemUiVisibilityChange(int visibility) {
-                        if ( m_frame.getChildAt( m_frame.getChildCount()-1 ) instanceof  WebView ) {
-                            if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                        if ( m_customView == null ) {
+                            if( (visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) != 0 ) {
+                                getActionBar().hide();
+                            }
+                            else {
                                 getActionBar().show();
-                                if (m_frame.getSystemUiVisibility() != 0) {
-                                    m_frame.setSystemUiVisibility(0);
-                                }
+                                m_frame.setSystemUiVisibility(0);
                                 if (m_fullscreen) {
                                     fullscreen_delay(5000);
                                 }
-                            } else {
-                                getActionBar().hide();
                             }
                         }
-                        else {
-                            m_frame.setSystemUiVisibility(m_visibility);
-                         }
                     }
                 });
 
@@ -344,17 +358,13 @@ public class BrowserActivity extends Activity {
 
         if (savedInstanceState != null) {
             m_savedWeb.clear();
-            int tabcount = savedInstanceState.getInt("WebViewCount", 0);
-            Bundle state;
+            int tabcount = savedInstanceState.getInt("wvc", 0);
             int i;
             for (i = 0; i < tabcount; i++) {
-                state = savedInstanceState.getBundle("WebView" + i);
+                Bundle state = savedInstanceState.getBundle("wv" + i);
                 if (state != null) {
                     WebEntry sw = new WebEntry(state);
                     m_savedWeb.add(sw);
-                }
-                else {
-                    break ;
                 }
             }
         }
@@ -362,8 +372,9 @@ public class BrowserActivity extends Activity {
         Intent intent = getIntent();
         if (intent != null) {
             String url = intent.getDataString();
-            if (url != null)
+            if (url != null) {
                 newWeb(url);
+            }
         }
 
         // bookmarkRestore();
@@ -375,36 +386,33 @@ public class BrowserActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         String url = intent.getDataString();
-        if (url != null)
+        if (url != null) {
             newWeb(url);
+        }
     }
 
-    // progress from 0 to 100
     private void setProgress() {
         WebView view = currentWeb();
         if( view!=null && view.getVisibility() == View.VISIBLE ) {
-            int progress = view.getProgress() * 100;
-            int xprogress = m_progressbar.getProgress();
-            if (xprogress > progress) {
-                xprogress = 0;
+            int progress = view.getProgress() ;
+            ProgressBar pbar = (ProgressBar) findViewById(R.id.progressBar) ;
+            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.N ) {
+                pbar.setProgress(progress,true);
             }
-            if (progress < 10000 && m_progressbar.getAlpha() < 0.1f ) {
-                m_progressbar.animate().setDuration(500).alpha(0.5f);
+            else {
+                pbar.setProgress(progress);
             }
-
-            ObjectAnimator ani = ObjectAnimator.ofInt(m_progressbar, "progress", xprogress, progress);
-            ani.setDuration( (progress - xprogress) / 10).setAutoCancel(true);
-            if (progress >= 10000) {
-                ani.addListener(new AnimatorListenerAdapter() {
-                    @Override
-                    public void onAnimationEnd(Animator animation) {
-                        if (m_progressbar.getProgress() >= 10000 && m_progressbar.getAlpha()>0.4f)
-                            m_progressbar.animate().setDuration(500).alpha(0.0f);
-                    }
-
-                });
+            float alpha = pbar.getAlpha() ;
+            if( progress>5 && progress<95 ) {
+                if( alpha < 0.6f ) {
+                    pbar.animate().setDuration(300).alpha(0.6f);
+                }
             }
-            ani.start();
+            else {
+                if( alpha > 0.0f ) {
+                    pbar.animate().setDuration(300).alpha(0.0f);
+                }
+            }
         }
     }
 
@@ -437,114 +445,107 @@ public class BrowserActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if( requestCode == Permit_Reload ) {
+            WebView v = currentWeb();
+            v.reload();
+        }
     }
 
-    protected interface permCallback {
-        public void callback( boolean granted );
-    }
-
-    protected void requestPermission( String perm, permCallback callback ) {
+    protected void requestPermission( String perm , int permitOp ) {
         if( Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ) {
             if( checkSelfPermission( perm ) != PackageManager.PERMISSION_GRANTED ) {
-                // Should we show an explanation?
-                if ( shouldShowRequestPermissionRationale( perm ) ) {
-
-                    // Show an expanation to the user *asynchronously* -- don't block
-                    // this thread waiting for the user's response! After the user
-                    // sees the explanation, try again to request the permission.
-
-                } else {
-
-                    // No explanation needed, we can request the permission.
-
-                    requestPermissions( new String[]{perm}, 0 ) ;
-
-                    // MY_PERMISSIONS_REQUEST_READ_CONTACTS is an
-                    // app-defined int constant. The callback method gets the
-                    // result of the request.
-                }
+                requestPermissions( new String[]{perm}, permitOp ) ;
             }
         }
+    }
+
+    protected void openExternal( String url , String type ) {
+        // MimeTypeMap map = MimeTypeMap.getSingleton();
+        // String ext = MimeTypeMap.getFileExtensionFromUrl(url);
+        // String type = map.getMimeTypeFromExtension(ext);
+        if( type == null ) {
+            openExternal( url );
+        }
         else {
-            callback.callback(true);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndTypeAndNormalize(Uri.parse(url), type);
+            if( getPackageManager().resolveActivity(intent,0) != null ) {
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try {
+                    startActivity(intent);
+                } catch (Exception e) {
+                    Log.d("openExternal", e.getMessage());
+                }
+            }
         }
     }
 
     protected void openExternal( String url ) {
-        MimeTypeMap map = MimeTypeMap.getSingleton();
-        String ext = MimeTypeMap.getFileExtensionFromUrl(url);
-        String type = map.getMimeTypeFromExtension(ext);
+
+        ClipboardManager clipboard = (ClipboardManager)
+                getSystemService(Context.CLIPBOARD_SERVICE);
+        clipboard.setPrimaryClip(ClipData.newPlainText("link", url));
+
         Intent intent = new Intent(Intent.ACTION_VIEW);
-        if (type == null) {
-            intent.setData(Uri.parse(url));
+        // MimeTypeMap map = MimeTypeMap.getSingleton();
+        // String ext = MimeTypeMap.getFileExtensionFromUrl(url);
+        // String type = map.getMimeTypeFromExtension(ext);
+
+        String type = null;
+        try {
+            type = URLConnection.guessContentTypeFromName(URLEncoder.encode(url, "UTF-8"));
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        if( type == null ) {
+            intent.setDataAndNormalize(Uri.parse(url));
         }
         else {
-            intent.setDataAndType(Uri.parse(url), type) ;
+            intent.setDataAndTypeAndNormalize(Uri.parse(url), type);
         }
         if( getPackageManager().resolveActivity(intent,0) != null ) {
-            startActivity(intent);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            try {
+                startActivity(intent);
+            } catch (Exception e) {
+                Log.d("openExternal", e.getMessage());
+            }
         }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+
+        showWeb();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
 
-        if ( getWebViewCount() + m_savedWeb.size() == 0 ) {
-            try {
-                File pagefile = new File( getCacheDir(), pagesfile );
-                int flen = (int)pagefile.length() ;
-                if( flen>0 ) {
-                    byte[] buffer = new byte[flen];
-                    FileInputStream inputStream = new FileInputStream(pagefile);
-                    if (inputStream != null) {
-                        int r = inputStream.read(buffer);
-                        if (r > 0) {
-                            JSONArray ja = new JSONArray(new String(buffer, 0, r));
-                            for (int i = 0; i < ja.length(); i++) {
-                                newWeb(ja.getString(i));
-                            }
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-        showWeb();
-        fullscreen( false );
-        fullscreen_delay(3000);
+        setFullscreen();
 
+        WebView v = currentWeb() ;
+        if( v!=null ) v.resumeTimers();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+
+        WebView v = currentWeb();
+        if( v!=null ) {
+            v.pauseTimers();
+        }
+
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+
         saveOptions();
-
-        JSONArray ja = new JSONArray();
-
-        int i;
-        for (i = 0; i < m_savedWeb.size(); i++) {
-            WebEntry sw = m_savedWeb.get(i);
-            ja.put( sw.getUrl() ) ;
-        }
-
-        for (i = 0; i < m_frame.getChildCount(); i++) {
-            View v = m_frame.getChildAt(i);
-            if (v instanceof WebView) {
-                ja.put( ((WebView)v).getUrl() );
-            }
-        }
-
-        try {
-            File pagefile = new File( getCacheDir(), pagesfile );
-            FileOutputStream outputStream = new FileOutputStream( pagefile );
-            outputStream.write( ja.toString().getBytes() ) ;
-            outputStream.close();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
 
         if( m_bookmarks.save()) {
             m_datachanged = true ;
@@ -554,16 +555,6 @@ public class BrowserActivity extends Activity {
             BackupManager backup = new BackupManager(this);
             backup.dataChanged();
             m_datachanged = false ;
-        }
-
-    }
-
-    void traversView(View v, int level ) {
-        Log.d("TRAVERS", "Level: " + level + ":" + v.toString());
-        if (v instanceof ViewGroup) {
-            for (int i = 0; i < ((ViewGroup) v).getChildCount(); i++) {
-                traversView(((ViewGroup) v).getChildAt(i), level + 1);
-            }
         }
     }
 
@@ -586,11 +577,11 @@ public class BrowserActivity extends Activity {
             }
             View v = m_frame.getChildAt(i);
             if (v instanceof WebView && v.getVisibility()!=View.VISIBLE ) {
-                ((WebView) v).clearCache(false);
-                WebEntry sw = new WebEntry();
-                sw.save((WebView) v);
+                WebEntry sw = new WebEntry((WebView) v);
                 m_savedWeb.add(sw);
                 m_frame.removeView(v);
+                ((WebView) v).clearCache(false);
+                ((WebView) v).destroy();
             }
             else {
                 i++;
@@ -601,12 +592,6 @@ public class BrowserActivity extends Activity {
     protected WebView newWebView() {
         WebView webView = new WebView(this) {
             private boolean m_paused = false;
-
-            @Override
-            protected void onDetachedFromWindow() {
-                super.onDetachedFromWindow();
-                loadUrl("about:blank");
-            }
 
             @Override
             protected void onVisibilityChanged(View changedView, int visibility) {
@@ -631,12 +616,10 @@ public class BrowserActivity extends Activity {
 
         webSettings.setAppCacheEnabled(true);
         webSettings.setAppCachePath( getCacheDir().getPath() );
+        webSettings.setAppCacheMaxSize(100000000);
+
         webSettings.setDatabaseEnabled(true);
-        if(Build.VERSION.SDK_INT < 19 ) {
-            webSettings.setDatabasePath(getCacheDir().getPath());
-        }
         webSettings.setDomStorageEnabled(true);
-        webSettings.setGeolocationDatabasePath(getCacheDir().getPath());
         webSettings.setGeolocationEnabled(true);
 
         webSettings.setDefaultFontSize(m_textsize);
@@ -646,17 +629,26 @@ public class BrowserActivity extends Activity {
         webSettings.setUseWideViewPort(true);
         webSettings.setBuiltInZoomControls(true);
         webSettings.setSupportZoom(true);
+        webSettings.setDisplayZoomControls(false);
+
         webSettings.setLayoutAlgorithm(WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING);
         webSettings.setLoadWithOverviewMode(true);
 
         if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP ) {
-            // webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
             webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
         // all true on new web
         webSettings.setLoadsImagesAutomatically(true);
         webSettings.setJavaScriptEnabled(true);
+
+        webView.setDownloadListener( new DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
+                Intent i = new Intent(Intent.ACTION_VIEW , Uri.parse(url));
+                startActivity(i);
+            }
+        });
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -668,12 +660,8 @@ public class BrowserActivity extends Activity {
 
             @Override
             public void onGeolocationPermissionsShowPrompt(final String origin, final GeolocationPermissions.Callback geoCallback) {
-                requestPermission(Manifest.permission.ACCESS_FINE_LOCATION, new permCallback() {
-                    @Override
-                    public void callback(boolean granted) {
-                        geoCallback.invoke(origin, granted, true);
-                    }
-                });
+                requestPermission(Manifest.permission.ACCESS_FINE_LOCATION , Permit_Reload );
+                geoCallback.invoke(origin, true, true);
             }
 
             @Override
@@ -703,36 +691,26 @@ public class BrowserActivity extends Activity {
             public void onShowCustomView(View view, CustomViewCallback callback) {
                 super.onShowCustomView(view, callback);
 
-                view.setBackgroundColor(0xff080808);
-                m_frame.addView(view);
+                m_customView = view ;
 
-                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                m_customView.setBackgroundColor(0xff080808);
+                m_saveOrientation = getRequestedOrientation();
+                m_frame.addView(m_customView);
 
-                getActionBar().hide();
-                m_visibility =
-                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                        View.SYSTEM_UI_FLAG_FULLSCREEN |
-                        View.SYSTEM_UI_FLAG_IMMERSIVE |
-                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY ;
-                m_frame.setSystemUiVisibility(m_visibility);
+                setFullscreen();
+
             }
+
 
             @Override
             public void onHideCustomView() {
                 super.onHideCustomView();
 
-                for(int i=m_frame.getChildCount()-1; i>0 ; i-- ) {
-                    View view = m_frame.getChildAt(i);
-                    if( view!=null && view instanceof WebView ) {
-                        break;
-                    }
-                    m_frame.removeView(view);
+                if( m_customView != null ) {
+                    m_frame.removeView(m_customView);
+                    m_customView = null;
                 }
-
-                setRequestedOrientation( ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED );
-                fullscreen_delay(30);
+                setRequestedOrientation( m_saveOrientation );
             }
 
         });
@@ -759,6 +737,8 @@ public class BrowserActivity extends Activity {
                     view.getSettings().setLoadsImagesAutomatically(!noimg);
                 }
 
+                videolist.clear();
+
                 setTitle(url);
                 setIcon(favicon);
             }
@@ -769,6 +749,7 @@ public class BrowserActivity extends Activity {
                 String scheme = uri.getScheme();
                 if (scheme.equals("http")
                         || scheme.equals("https")
+                        || scheme.equals("content")
                         || scheme.equals("file")) {
                     if (uri.getHost().contains("google.") && uri.getPath().contains("search")) {
                         String q = uri.getQueryParameter("q");
@@ -778,6 +759,7 @@ public class BrowserActivity extends Activity {
                             if (scheme != null) {
                                 if (scheme.equals("http")
                                         || scheme.equals("https")
+                                        || scheme.equals("content")
                                         || scheme.equals("file")) {
                                     view.loadUrl(q);
                                     return true;
@@ -802,13 +784,10 @@ public class BrowserActivity extends Activity {
             @Override
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 if( ! isReload ) {
-                    // check history
-
-                    WebView.HitTestResult ht = view.getHitTestResult() ;
-
                     WebBackForwardList wfl = view.copyBackForwardList();
-                    if (wfl != null && wfl.getSize() > 1 && ( ht.getType() == WebView.HitTestResult.SRC_ANCHOR_TYPE || ht.getType() == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE ) ) {
-                        WebHistoryItem whi = wfl.getItemAtIndex(wfl.getSize() - 2);
+                    if (wfl != null && wfl.getSize() > 1 ) {
+                        int curIdx = wfl.getCurrentIndex();
+                        WebHistoryItem whi = wfl.getItemAtIndex(curIdx - 1);
                         if (whi != null) {
                             String xurl = whi.getUrl();
                             int xl , ul ;
@@ -839,19 +818,76 @@ public class BrowserActivity extends Activity {
                 super.doUpdateVisitedHistory(view, url, isReload);
             }
 
-            @Override
-            public void onLoadResource(WebView view, String url) {
-                // Log.i("hep-res", url);
-                super.onLoadResource(view, url);
+            class GetUrlContentTypeTask extends AsyncTask< String, Void, videoItem > {
+                @Override
+                protected videoItem doInBackground(String... strings) {
+
+                    URL url = null;
+                    try {
+                        url = new URL(strings[0]);
+                        HttpURLConnection connection = (HttpURLConnection)  url.openConnection();
+                        connection.setRequestMethod("HEAD");
+                        connection.connect();
+                        String contentType = connection.getContentType();
+                        if( contentType != null && contentType.startsWith("video") ) {
+                            videoItem vi = new videoItem();
+                            vi.url = strings[0];
+                            vi.type = contentType ;
+                            return vi ;
+                        }
+                    } catch (MalformedURLException e) {
+                        e.printStackTrace();
+                    } catch (ProtocolException e) {
+                        e.printStackTrace();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+
+                    return null;
+                }
+
+                @Override
+                protected void onPostExecute(videoItem result) {
+                    if( result!=null )
+                        videolist.add(result);
+                }
             }
 
             @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                if( view.getParent() == null && url.equals("about:blank") ) {
-                    view.destroy();
+            public void onLoadResource(WebView view, String url) {
+                String type = null;
+                MimeTypeMap mtmap = MimeTypeMap.getSingleton();
+                // String type = map.getMimeTypeFromExtension(ext);
+                //
+                String ext = mtmap.getFileExtensionFromUrl(url);
+                if( ext!=null && ext.length()>0 ) {
+                    if( ext.equalsIgnoreCase("mp4") || ext.equalsIgnoreCase("m3u8") || ext.equalsIgnoreCase("mkv") ) {
+                        type = "video/*" ;
+                    }
+                    else {
+                        String Eurl = url ;
+                        try {
+                            Eurl = URLEncoder.encode(url, "UTF-8");
+
+                        } catch (UnsupportedEncodingException e) {
+                            Eurl = url ;
+                            e.printStackTrace();
+                        }
+                        type = URLConnection.guessContentTypeFromName(Eurl);
+                    }
+                    if( type != null && type.startsWith("video") ) {
+                        videoItem vi = new videoItem ();
+                        vi.url = url ;
+                        vi.type = type ;
+                        videolist.add(vi);
+                    }
                 }
+                else {
+                    // new GetUrlContentTypeTask ().execute(url);
+                }
+                super.onLoadResource(view, url);
             }
+
 
             @Override
             public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) {
@@ -886,18 +922,15 @@ public class BrowserActivity extends Activity {
 
     protected void newWeb(String url) {
         WebView v = newWebView();
+
         if (url == null) {
             url = defaultUrl ;
-
-            boolean connected = false ;
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            NetworkInfo ni = cm.getActiveNetworkInfo();
-            if (ni != null) {
-                connected = ni.isConnected();
-            }
-            v.setNetworkAvailable(connected);
-            if (!connected) {
-                v.getSettings().setCacheMode(WebSettings.LOAD_CACHE_ONLY);
+        }
+        else {
+            Uri uri = Uri.parse(url);
+            String scheme = uri.getScheme();
+            if (scheme.equals("file")) {
+                requestPermission(Manifest.permission.READ_EXTERNAL_STORAGE, Permit_Reload );
             }
         }
 
@@ -914,6 +947,7 @@ public class BrowserActivity extends Activity {
             View view = m_frame.getChildAt(i) ;
             if( (view instanceof WebView) && view.getId() == id ) {
                 m_frame.removeView(view);
+                ((WebView) view).destroy();
             }
         }
 
@@ -924,20 +958,28 @@ public class BrowserActivity extends Activity {
             }
         }
 
-        invalidateOptionsMenu();
+        if ( currentWeb() == null && m_savedWeb.size() == 0 ) {
+            finish();
+        }
+        else {
+            showWeb();
+            invalidateOptionsMenu();
+        }
     }
 
     protected void closeWeb() {
         WebView view = currentWeb();
         if( view!=null ) {
             m_frame.removeView(view);
-            if( (getWebViewCount() + m_savedWeb.size()) < 1 && defaultUrl.equals( view.getOriginalUrl() )) {
-                super.onBackPressed();
-                return ;
-            }
+            view.destroy();
         }
-        showWeb();
-        invalidateOptionsMenu();
+        if ( currentWeb() == null && m_savedWeb.size() == 0 ) {
+            finish();
+        }
+        else {
+            showWeb();
+            invalidateOptionsMenu();
+        }
     }
 
     protected void showWeb(WebView v) {
@@ -1084,7 +1126,15 @@ public class BrowserActivity extends Activity {
             // copy link
             mi = menu.add(0, 1003, 0, "Copy Link");
             mi.setIntent(intent);
+
         } else if (hittype == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+            // delayed open in new page
+            menu.add(0, 2001, 0, "Open in New Page");
+            // delayed open external
+            menu.add(0, 2002, 0, "Open with Other App");
+            // delayed copy link
+            menu.add(0, 2003, 0, "Copy Link");
+
             // direct open image
             mi = menu.add(0, 1001, 0, "Open Image");
             mi.setIntent(intent);
@@ -1094,13 +1144,6 @@ public class BrowserActivity extends Activity {
             // copy direct link
             mi = menu.add(0, 1003, 0, "Copy Image Link");
             mi.setIntent(intent);
-
-            // delayed open in new page
-            menu.add(0, 2001, 0, "Open in New Page");
-            // delayed open external
-            menu.add(0, 2002, 0, "Open with Other App");
-            // delayed copy link
-            menu.add(0, 2003, 0, "Copy Link");
 
         } else if (hittype == WebView.HitTestResult.IMAGE_TYPE) {
             // direct open image
@@ -1133,13 +1176,14 @@ public class BrowserActivity extends Activity {
             return true;
         } else if (id == 1002) {
             // direct open external
-            openExternal(item.getIntent().getDataString());
+            openExternal( item.getIntent().getDataString());
             return true;
         } else if (id == 1003) {
             // dirtect copy link
             ClipboardManager clipboard = (ClipboardManager)
                     getSystemService(Context.CLIPBOARD_SERVICE);
-            clipboard.setPrimaryClip(ClipData.newUri(getContentResolver(), "link", item.getIntent().getData()));
+            ClipData cd = ClipData.newPlainText( "link", item.getIntent().getDataString());
+            clipboard.setPrimaryClip(cd);
             return true;
         } else if (id >= 2000 && id < 2100) {
             // delayed open
@@ -1151,33 +1195,46 @@ public class BrowserActivity extends Activity {
         }
     }
 
-    protected void fullscreen( boolean f ) {
-        if (f) {
+    protected void setFullscreen() {
+        if( m_customView == null ) {
+            if (m_fullscreen) {
+                getActionBar().hide();
+                m_frame.setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                                View.SYSTEM_UI_FLAG_FULLSCREEN |
+                                View.SYSTEM_UI_FLAG_IMMERSIVE);
+            } else {
+                getActionBar().show();
+                m_frame.setSystemUiVisibility(0);
+            }
+        }
+        else {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+
             getActionBar().hide();
-            m_frame.setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                View.SYSTEM_UI_FLAG_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_IMMERSIVE );
-        } else {
-            getActionBar().show();
-            m_frame.setSystemUiVisibility(0);
+            m_customView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                    View.SYSTEM_UI_FLAG_FULLSCREEN |
+                    View.SYSTEM_UI_FLAG_IMMERSIVE |
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY );
         }
     }
 
     protected void fullscreen_delay(long delayMillis) {
+        if( m_handler.hasMessages(MSG_FULLSCREEN)) {
+            m_handler.removeMessages(MSG_FULLSCREEN);
+        }
         m_handler.sendEmptyMessageDelayed(MSG_FULLSCREEN, delayMillis);
     }
 
     @Override
     public void onUserInteraction() {
         super.onUserInteraction();
-
-        if( m_handler.hasMessages(MSG_FULLSCREEN)) {
-            m_handler.removeMessages(MSG_FULLSCREEN);
+        if( m_fullscreen && m_handler.hasMessages(MSG_FULLSCREEN) )
             fullscreen_delay(5000);
-        }
     }
 
     abstract class ListEntry {
@@ -1722,19 +1779,9 @@ public class BrowserActivity extends Activity {
             mi.setChecked(!loadimg);
 
             // history
-            WebBackForwardList wfl = webview.copyBackForwardList();
-            if (wfl != null && wfl.getSize() > 0) {
-                SubMenu shis = menu.findItem(R.id.history).getSubMenu();
-                if (shis != null) {
-                    shis.removeGroup(R.id.group_history);
-                    for (int m = wfl.getSize() - 1; m >= 0; m--) {
-                        WebHistoryItem whi = wfl.getItemAtIndex(m);
-                        if (whi != null) {
-                            mi = shis.add(R.id.group_history, 0, 0, whi.getUrl());
-                            mi.setIcon(iconFromBitmap(whi.getFavicon()));
-                        }
-                    }
-                }
+            SubMenu mhis = menu.findItem(R.id.history).getSubMenu();
+            if (mhis != null) {
+                mhis.removeGroup(R.id.group_history);
             }
         }
 
@@ -1752,12 +1799,26 @@ public class BrowserActivity extends Activity {
         //noinspection SimplifiableIfStatement
         if (gid == R.id.group_history) {
             // history
-            String url = item.getTitle().toString();
-            currentWeb().loadUrl(item.getTitle().toString());
-            setTitle(url);
-            setIcon(item.getIcon());
+            WebView v = currentWeb();
+            if( v != null ) {
+                if (id == 0) {
+                    v.reload();
+                }
+                else if( v.canGoBackOrForward( id )) {
+                    setIcon(item.getIcon());
+                    setTitle(item.getTitle().toString());
+                    v.goBackOrForward(id);
+                }
+            }
+            // currentWeb().loadUrl(item.getTitle().toString());
+            // setTitle(url);
+            // setIcon(item.getIcon());
             return true;
-        } else if (id == R.id.pages) {
+        }
+        else if (gid == R.id.group_video) {
+            openExternal( videolist.get(id).url, videolist.get(id).type );
+        }
+        else if (id == R.id.pages) {
             View anchor = null ;
             int resId = getResources().getIdentifier("action_bar_container", "id", "android");
             if( resId > 0) {
@@ -1777,22 +1838,63 @@ public class BrowserActivity extends Activity {
         else if (id == R.id.close_page) {
             closeWeb();
             return true;
-        } else if (id == R.id.new_page) {
+        }
+        else if (id == R.id.new_page) {
             newWeb(null);
             return true;
-        } else if (id == R.id.fullscreen) {
+        }
+        else if (id == R.id.fullscreen) {
             m_fullscreen = !m_fullscreen;
-            fullscreen_delay(100);
+            setFullscreen();
             return true;
-        } else if (id == R.id.noimage) {
+        }
+        else if (id == R.id.noimage) {
             currentWeb().getSettings().setLoadsImagesAutomatically(item.isChecked());
             setSitePref() ;
             currentWeb().reload();
             return true;
-        } else if (id == R.id.disablejavascript) {
+        }
+        else if (id == R.id.disablejavascript) {
             currentWeb().getSettings().setJavaScriptEnabled(item.isChecked());
             setSitePref() ;
             currentWeb().reload();
+            return true;
+        }
+        else if( id == R.id.history) {
+            SubMenu mhis = item.getSubMenu();
+            if( mhis != null ) {
+                WebView webview = currentWeb();
+                WebBackForwardList wfl = webview.copyBackForwardList();
+                mhis.removeGroup(R.id.group_history);
+                int curIdx = wfl.getCurrentIndex();
+                for (int m = wfl.getSize() - 1; m >= 0; m--) {
+                    WebHistoryItem whi = wfl.getItemAtIndex(m);
+                    if (whi != null) {
+                        String title = whi.getTitle() ;
+                        if( title == null ) {
+                            title = whi.getUrl();
+                        }
+                        if( m==curIdx) {
+                            title = "* "+title ;
+                        }
+                        MenuItem mi = mhis.add(R.id.group_history, m - curIdx, 0, title);
+                        mi.setIcon(iconFromBitmap(whi.getFavicon()));
+                    }
+                }
+            }
+        }
+        else if (id == R.id.openinother) {
+            openExternal( currentWeb().getUrl() ) ;
+            return true;
+        }
+        else if (id == R.id.openvideo) {
+            SubMenu mvid = item.getSubMenu();
+            if( mvid != null ) {
+                mvid.removeGroup(R.id.group_video);
+                for( int v = 0 ; v<videolist.size(); v++ ) {
+                    mvid.add(R.id.group_video, v, 0, videolist.get(v).url);
+                }
+            }
             return true;
         }
         return super.onOptionsItemSelected(item);
@@ -1803,22 +1905,21 @@ public class BrowserActivity extends Activity {
         if (currentWeb().canGoBack()) {
             currentWeb().goBack();
         } else {
-            closeWeb();
+            closeWeb() ;
         }
     }
 
     @Override
     protected void onSaveInstanceState(Bundle outState) {
-        super.onSaveInstanceState(outState);
         Bundle bundle;
 
         int idx = 0;
         int i;
         for (i = 0; i < m_savedWeb.size(); i++) {
-            WebEntry sw = m_savedWeb.get(i);
-            bundle = sw.getState();
+            WebEntry we = m_savedWeb.get(i);
+            bundle = we.getBundle();
             if (bundle != null) {
-                outState.putBundle("WebView" + idx, bundle);
+                outState.putBundle("wv" + idx, bundle);
                 idx++;
             }
         }
@@ -1826,17 +1927,16 @@ public class BrowserActivity extends Activity {
         for (i = 0; i < m_frame.getChildCount(); i++) {
             View v = m_frame.getChildAt(i);
             if (v instanceof WebView) {
-                WebView webView = (WebView) v;
-                bundle = new Bundle();
-                webView.saveState(bundle);
-                outState.putBundle("WebView" + idx, bundle);
-                idx++;
+                WebEntry we = new WebEntry((WebView)v);
+                bundle = we.getBundle();
+                if (bundle != null) {
+                    outState.putBundle("wv" + idx, bundle);
+                    idx++;
+                }
             }
         }
 
-        outState.putInt("WebViewCount", idx);
-
+        outState.putInt("wvc", idx);
+        super.onSaveInstanceState(outState);
     }
-
-
 }

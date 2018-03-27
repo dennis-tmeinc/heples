@@ -14,7 +14,6 @@
         android:fullBackupOnly="true"
         android:icon="@drawable/ic_browser"
         android:label="@string/app_name"
-        android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity
             android:name=".BrowserActivity"
@@ -47,11 +46,11 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
 
+                <data android:scheme="about" />
                 <data android:scheme="http" />
                 <data android:scheme="https" />
                 <data android:scheme="content" />
                 <data android:scheme="file" />
-                <data android:scheme="content" />
                 <data android:mimeType="text/*" />
                 <data android:mimeType="video/mp4" />
             </intent-filter>

@@ -1,13 +1,11 @@
 <resources>
+    <style name="AppTheme" parent="android:Theme.Material">
 
-    <!-- Base application theme. -->
-    <style name="AppTheme" parent="android:Theme.DeviceDefault.Light">
+        <item name="android:colorPrimary">@color/colorPrimary</item>
+        <item name="android:colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="android:colorAccent">@color/colorAccent</item>
+        <item name="android:navigationBarColor">@color/colorNavigationBar</item>
 
-        <item name="android:listPopupWindowStyle">@style/MyListPopupWindow</item>
-    </style>
-
-    <style name="MyListPopupWindow" parent="android:Widget.Holo.Light.ListPopupWindow">
-        <item name="android:divider">@android:color/holo_blue_dark</item>
     </style>
 
 </resources>
