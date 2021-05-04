@@ -34,6 +34,11 @@
         android:icon="@android:drawable/sym_def_app_icon"
         android:title="Open With Other App" />
     <item
+        android:id="@+id/share"
+        android:title="Share"
+        android:actionProviderClass=
+            "android.widget.ShareActionProvider" />
+    <item
         android:id="@+id/openvideo"
         android:icon="@android:drawable/presence_video_online"
         android:title="Open Videos" >
@@ -47,5 +52,7 @@
         android:icon="@android:drawable/ic_delete"
         android:title="Close"
         android:showAsAction="always"/>
-
+    <item
+        android:id="@+id/cleardata"
+        android:title="Clear Data" />
 </menu>
